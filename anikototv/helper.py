@@ -13,9 +13,9 @@ time (the port is taken).
   pythonw helper.py          (http://127.0.0.1:8767)
 
 Capture folder: settings.json next to this file, {"save_folder": "D:\Anime captures"}
-(copy settings.example.json; a pasted path with single backslashes is fine). It is
-read again for every capture, so a change works at once. Without it:
-Pictures\Anime captures.
+(a pasted path with single backslashes is fine). The first start makes it, set
+to Pictures\Anime captures. It is read again for every capture, so a change
+works at once.
 
 Safety
 - Listens on 127.0.0.1 only, and only answers Host 127.0.0.1 / localhost.
@@ -60,7 +60,7 @@ if sys.stdout is None:
 if sys.stderr is None:
     sys.stderr = open(os.devnull, 'w')
 
-VERSION = '1.2.1'
+VERSION = '1.2.2'
 HERE = os.path.dirname(os.path.abspath(__file__))
 PORT = int(os.environ.get('ACAP_PORT', 8767))                                      # env: tests
 
@@ -614,12 +614,28 @@ class Server(ThreadingHTTPServer):
         super().server_bind()
 
 
+def ensure_settings():
+    """First start: make settings.json next to this file, set to the default
+    folder, so there is a file to open and change (tests set ACAP_DIR)."""
+    p = os.path.join(HERE, 'settings.json')
+    if os.path.exists(p) or os.environ.get('ACAP_DIR'):
+        return
+    try:
+        with open(p, 'w', encoding='utf8') as f:
+            json.dump({'save_folder': DEFAULT_FOLDER}, f, indent=2)
+            f.write('\n')
+        log(f'made {p}')
+    except OSError as e:
+        log(f'could not make settings.json: {e}')
+
+
 def main():
     try:
         srv = Server(('127.0.0.1', PORT), Handler)
     except OSError as e:
         log(f'not started, port {PORT} taken ({e.strerror}) - already running?')
         return
+    ensure_settings()
     log(f'helper {VERSION} listening on 127.0.0.1:{PORT}, saving to {capture_dir()}')
     threading.Thread(target=recover, daemon=True).start()
     threading.Thread(target=watchdog, daemon=True).start()
