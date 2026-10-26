@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Anime Capture
 // @namespace    https://github.com/YoruCAnime/Anime-site-scripts
-// @version      1.3.2
+// @version      1.3.3
 // @description  On anikototv.to video pages: ] screenshot (the best JPEG under 200 KB), = start recording, - stop, [ subtitles in captures on / off. Saved into your capture folder as "<date time> <anime> S1E2". The player fills the browser window when the video starts (Esc leaves, W toggles), and its controls fade 2 s after the mouse stops. Needs the small helper (helper.py) running on this PC.
 // @author       YoruCAnime
 // @homepageURL  https://github.com/YoruCAnime/Anime-site-scripts
@@ -69,6 +69,10 @@
   // refuses that quality (error 233403) a forced quality stops the picture,
   // while Auto just steps down. Auto reaches 1080p by itself on a good line.
   const BEST_QUALITY = false;
+  // JW players start on Auto with a guess of 0.5 Mbit/s, so they open on a low
+  // quality and climb. This tells them the line is fast (in bit/s) so Auto
+  // opens at the top quality; it still steps down if it has to. 0 = off.
+  const START_BANDWIDTH = 50e6;
   const HIDE_CONTROLS_AFTER = 2000;   // ms without moving the mouse before the player's controls and the pointer fade (0 = never)
   const SUBS_DEFAULT = true;   // subtitles in captures until [ turns them off (remembered)
   const KEY_SHOT = ']', KEY_START = '=', KEY_STOP = '-', KEY_SUBS = '[', KEY_FILL = 'w';
@@ -123,15 +127,19 @@
   });
   if (!IS_TOP) post(window.top, { type: 'ask' });
 
-  // Up to 1.3.1 the script switched JW to its top quality, and JW remembers
-  // that choice in the player's storage (even with the script off). Once, in
-  // the frame that has it, put it back on Auto.
+  // JW Player keeps its settings in the player's storage ("jwplayer.*") and
+  // reads them when it starts, so they are set here before it loads.
+  // - Every time: its speed guess (START_BANDWIDTH), so Auto opens at the top.
+  // - Once: a quality picked by hand (or by 1.3.1 and older) goes back to Auto,
+  //   because a picked quality can't step down when the server refuses it
+  //   (error 233403 stops the picture). Picking one by hand later is kept.
   if (!IS_TOP && !BEST_QUALITY) {
     try {
-      if (!GM_getValue('jwAutoReset', false) && localStorage.getItem('jwplayer.qualityLabel') !== null) {
+      if (START_BANDWIDTH > 0) localStorage.setItem('jwplayer.bandwidthEstimate', String(START_BANDWIDTH));
+      if (!GM_getValue('jwAutoReset2', false) && localStorage.getItem('jwplayer.qualityLabel') !== null) {
         localStorage.removeItem('jwplayer.qualityLabel');
         localStorage.removeItem('jwplayer.bitrateSelection');
-        GM_setValue('jwAutoReset', true);
+        GM_setValue('jwAutoReset2', true);
       }
     } catch (e) { /* storage blocked */ }
   }
