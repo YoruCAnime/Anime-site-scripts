@@ -1,0 +1,7 @@
+# Local only: your settings, test tools, ffmpeg, caches and logs
+settings.json
+_dev_tools/
+ffmpeg.exe
+__pycache__/
+*.pyc
+*.log
