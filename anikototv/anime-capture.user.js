@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Anime Capture
 // @namespace    https://github.com/YoruCAnime/Anime-site-scripts
-// @version      1.4.0
+// @version      1.4.1
 // @description  On anikototv.to video pages: ] screenshot (the best JPEG under 200 KB), = start recording, - stop, [ subtitles in captures on / off. Saved into your capture folder as "<date time> <anime> S1E2". The player fills the browser window when the video starts (Esc leaves, W toggles), and its controls fade 2 s after the mouse stops. Needs the small helper (helper.py) running on this PC.
 // @author       YoruCAnime
 // @homepageURL  https://github.com/YoruCAnime/Anime-site-scripts
@@ -71,8 +71,8 @@
   const BEST_QUALITY = true;
   // If the server refuses part of the stream (JW error 233403 and the like),
   // the picture would stop for good with only the sound going on. Instead the
-  // player reloads at the same moment (fresh access, top quality again). At
-  // most once a minute, so an episode that really is broken doesn't loop.
+  // player reloads at the same moment: first as it was (fresh access), and if
+  // that quality is refused again, with the next quality down for that episode.
   const RELOAD_ON_REFUSED = true;
   // JW players guess 0.5 Mbit/s before they have measured the line, so their
   // first pieces of video are low quality. This guess (bit/s) is fast. 0 = off.
@@ -230,25 +230,42 @@
     tuned.add(p);
     if (RELOAD_ON_REFUSED) reloadWhenRefused(p);
     if (!BEST_QUALITY) return;
+    let told = false;
     const pick = () => {
       try {
+        const cap = qState().cap;                    // a quality the server refused for this episode
         const lv = p.getQualityLevels() || [];
         let best = -1, bh = 0;
         lv.forEach((l, i) => {
-          const h = +l.height || parseInt(l.label, 10) || 0;
-          if (!/auto/i.test(l.label || '') && h > bh) { bh = h; best = i; }
+          const h = levelHeight(l);
+          if (h > bh && (!cap || h < cap)) { bh = h; best = i; }
         });
         if (best >= 0 && p.getCurrentQuality() !== best) p.setCurrentQuality(best);
+        if (cap && best >= 0 && !told) { told = true; toast(`Playing ${bh}p (the server refused ${cap}p)`); }
       } catch (e) { /* not ready */ }
     };
     pick();
     try { p.on('levels', pick); } catch (e) { /* old JW */ }
   }
+  const levelHeight = (l) => (l && !/auto/i.test(l.label || '') && (+l.height || parseInt(l.label, 10))) || 0;
 
-  // JW error codes 23xxxx are the stream failing to load; ending in 403 /
-  // 410 / 401 the server refused it (its access ran out). The player's page
-  // takes a start time in its address (?time=), so reloading it there gets
-  // fresh access and carries on where the picture stopped.
+  // Per episode (this player page's address), for this tab: the last reload
+  // after a refusal, and the quality cap once a quality was refused twice.
+  const Q_KEY = 'acap-q:' + location.pathname;
+  function qState() {
+    try { return JSON.parse(sessionStorage.getItem(Q_KEY)) || {}; } catch (e) { return {}; }
+  }
+  function saveQState(s) {
+    try { sessionStorage.setItem(Q_KEY, JSON.stringify(s)); } catch (e) { /* blocked */ }
+  }
+
+  // JW error codes 23xxxx are the stream failing to load (ending in 403: the
+  // server refused it). The player's page takes a start time in its address
+  // (?time=), so reloading it there carries on where the picture stopped.
+  //  1st refusal: reload as it was - fresh access fixes an access that ran out.
+  //  Refused again within 2 minutes: that quality doesn't work right now, so
+  //  reload with the next quality down (1080p -> 720p ...), for this episode.
+  //  Nothing lower left: say so (another server may have it).
   function reloadWhenRefused(p) {
     try {
       p.on('error', (e) => {
@@ -258,18 +275,37 @@
         try { pos = +p.getPosition() || 0; } catch (err) { /* gone */ }
         const v = mainVideo() || document.querySelector('video');
         if (!pos && v) pos = v.currentTime || 0;
-        let last = 0;
-        try { last = +sessionStorage.getItem('acap-reload') || 0; } catch (err) { /* blocked */ }
-        if (Date.now() - last < 60000) {
-          toast(`The server refused this episode again (${code}).\nTry another server or reload the page.`, 'error');
+        const s = qState(), now = Date.now();
+        const reload = (msg) => {
+          saveQState(s);
+          const u = new URL(location.href);
+          u.searchParams.set('time', String(Math.max(0, Math.floor(pos) - 1)));
+          u.searchParams.set('autostart', 'true');
+          toast(msg);
+          setTimeout(() => location.replace(u.href), 700);
+        };
+        if (!s.at || now - s.at > 120000) {
+          s.at = now;
+          reload(`Stream refused (${code}) - reloading at ${clock(Math.floor(pos))}`);
           return;
         }
-        try { sessionStorage.setItem('acap-reload', String(Date.now())); } catch (err) { /* blocked */ }
-        const u = new URL(location.href);
-        u.searchParams.set('time', String(Math.max(0, Math.floor(pos) - 1)));
-        u.searchParams.set('autostart', 'true');
-        toast(`Stream refused (${code}) - reloading at ${clock(Math.floor(pos))}`);
-        setTimeout(() => location.replace(u.href), 700);
+        // The quality that failed: the one picked, else what was playing, else the top one allowed.
+        let lv = [];
+        try { lv = p.getQualityLevels() || []; } catch (err) { /* gone */ }
+        let cur = 0;
+        try { cur = levelHeight(lv[p.getCurrentQuality()]); } catch (err) { /* gone */ }
+        if (!cur) { try { cur = +((p.getVisualQuality() || {}).level || {}).height || 0; } catch (err) { /* old JW */ } }
+        const heights = lv.map(levelHeight).filter((h) => h && (!s.cap || h < s.cap)).sort((a, b) => b - a);
+        if (!cur) cur = heights[0] || 0;
+        const lower = heights.filter((h) => h < cur);
+        s.at = now;
+        if (!lower.length) {
+          saveQState(s);
+          toast(`The server is refusing this episode (${code}).\nTry another server (HD-2 / Vidstream).`, 'error');
+          return;
+        }
+        s.cap = cur;
+        reload(`${cur}p refused by the server - switching to ${lower[0]}p at ${clock(Math.floor(pos))}`);
       });
     } catch (e) { /* old JW */ }
   }
