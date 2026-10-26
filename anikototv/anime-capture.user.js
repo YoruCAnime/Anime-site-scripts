@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Anime Capture
 // @namespace    https://github.com/YoruCAnime/Anime-site-scripts
-// @version      1.4.1
+// @version      1.5.0
 // @description  On anikototv.to video pages: ] screenshot (the best JPEG under 200 KB), = start recording, - stop, [ subtitles in captures on / off. Saved into your capture folder as "<date time> <anime> S1E2". The player fills the browser window when the video starts (Esc leaves, W toggles), and its controls fade 2 s after the mouse stops. Needs the small helper (helper.py) running on this PC.
 // @author       YoruCAnime
 // @homepageURL  https://github.com/YoruCAnime/Anime-site-scripts
@@ -54,6 +54,9 @@
   //        Without them: the page title, and "ep-5" / "episode-5" / "?ep=5" in the address.
   // fill:  the player box that fills the browser window when the video starts
   //        (a CSS selector; true = the player's frame; left out = never).
+  // servers: the site's server buttons (item) and the box holding one group of
+  //        them (group, e.g. SUB / DUB); the current one has class "active".
+  //        When a server refuses the top quality the script clicks the next one.
   const SITES = [
     {
       host: 'anikototv.to',
@@ -62,6 +65,7 @@
       ep: () => (location.pathname.match(/\/ep-([\d.]+)/i) || [])[1] || attr('a[href*="/ep-"].active', 'data-num'),
       fill: '#player-wrapper',
       fillCss: '#player-wrapper #player{position:absolute!important;inset:0!important;width:100%!important;height:100%!important}',
+      servers: { item: '.servers li[data-link-id]', group: '.type' },
     },
   ];
   const FILL_WINDOW = true;    // the player fills the browser window when a video starts playing
@@ -127,6 +131,7 @@
     if (IS_TOP) { if (e.source && e.source !== window) onTopMsg(d, e.source); return; }
     if (e.source !== window.top) return;            // orders only come from the page
     if (d.type === 'state') { on = !!d.on; fillKey = !!d.fill; subsOn = !!d.subs; }
+    else if (d.type === 'serverReply') { const f = serverWait.get(d.id); if (f) { serverWait.delete(d.id); f(!!d.ok); } }
     else if (d.type === 'cmd') runCmd(d);
   });
   if (!IS_TOP) post(window.top, { type: 'ask' });
@@ -249,9 +254,16 @@
   }
   const levelHeight = (l) => (l && !/auto/i.test(l.label || '') && (+l.height || parseInt(l.label, 10))) || 0;
 
-  // Per episode (this player page's address), for this tab: the last reload
-  // after a refusal, and the quality cap once a quality was refused twice.
-  const Q_KEY = 'acap-q:' + location.pathname;
+  // Per episode and server (this player page's address without ?time), for
+  // this tab: the last reload after a refusal, and the quality cap once a
+  // quality was refused twice.
+  function playerAddress() {
+    const u = new URL(location.href);
+    u.searchParams.delete('time');
+    u.searchParams.delete('autostart');
+    return u.pathname + u.search;
+  }
+  const Q_KEY = 'acap-q:' + playerAddress();
   function qState() {
     try { return JSON.parse(sessionStorage.getItem(Q_KEY)) || {}; } catch (e) { return {}; }
   }
@@ -260,17 +272,30 @@
   }
 
   // JW error codes 23xxxx are the stream failing to load (ending in 403: the
-  // server refused it). The player's page takes a start time in its address
-  // (?time=), so reloading it there carries on where the picture stopped.
-  //  1st refusal: reload as it was - fresh access fixes an access that ran out.
-  //  Refused again within 2 minutes: that quality doesn't work right now, so
-  //  reload with the next quality down (1080p -> 720p ...), for this episode.
-  //  Nothing lower left: say so (another server may have it).
+  // server refused it). In this order, each at the moment the picture stopped:
+  //  1. The site's next server (HD-2, Vidstream ...), still the top quality -
+  //     the page clicks it and gives the new player the start time.
+  //  2. No server left to try: reload this player (its page takes ?time=) -
+  //     fresh access fixes an access that ran out.
+  //  3. Refused again within 2 minutes: the next quality down (1080p -> 720p).
+  //  4. Nothing lower left: say so.
+  const serverWait = new Map();
+  function askServerSwitch(pos, height, code) {
+    if (IS_TOP) return Promise.resolve(switchServer({ pos, height, code }));
+    return new Promise((res) => {
+      const id = Math.random().toString(36).slice(2);
+      serverWait.set(id, res);
+      post(window.top, { type: 'switchServer', id, pos, height, code });
+      setTimeout(() => { if (serverWait.delete(id)) res(false); }, 1500);
+    });
+  }
+  let refusing = false;
   function reloadWhenRefused(p) {
     try {
-      p.on('error', (e) => {
+      p.on('error', async (e) => {
         const code = +(e && e.code) || 0;
-        if (code < 230000 || code >= 240000) return;
+        if (code < 230000 || code >= 240000 || refusing) return;
+        refusing = true;
         let pos = 0;
         try { pos = +p.getPosition() || 0; } catch (err) { /* gone */ }
         const v = mainVideo() || document.querySelector('video');
@@ -284,11 +309,6 @@
           toast(msg);
           setTimeout(() => location.replace(u.href), 700);
         };
-        if (!s.at || now - s.at > 120000) {
-          s.at = now;
-          reload(`Stream refused (${code}) - reloading at ${clock(Math.floor(pos))}`);
-          return;
-        }
         // The quality that failed: the one picked, else what was playing, else the top one allowed.
         let lv = [];
         try { lv = p.getQualityLevels() || []; } catch (err) { /* gone */ }
@@ -297,6 +317,12 @@
         if (!cur) { try { cur = +((p.getVisualQuality() || {}).level || {}).height || 0; } catch (err) { /* old JW */ } }
         const heights = lv.map(levelHeight).filter((h) => h && (!s.cap || h < s.cap)).sort((a, b) => b - a);
         if (!cur) cur = heights[0] || 0;
+        if (!s.cap && await askServerSwitch(pos, cur, code)) return;     // the page is changing server
+        if (!s.at || now - s.at > 120000) {
+          s.at = now;
+          reload(`Stream refused (${code}) - reloading at ${clock(Math.floor(pos))}`);
+          return;
+        }
         const lower = heights.filter((h) => h < cur);
         s.at = now;
         if (!lower.length) {
@@ -334,14 +360,75 @@
       case 'ask': post(src, stateMsg()); break;
       case 'key': if (pageOn()) command(d.act, d.t); break;
       case 'esc': if (fill.on && !document.fullscreenElement) { fill.leave(true); toast('Window mode off (W = on)'); } break;
-      case 'video': if (!sawVideo) { sawVideo = true; syncState(); } break;
+      case 'video':
+        if (!sawVideo) { sawVideo = true; syncState(); }
+        fill.left = false;           // a new video (server, episode): window mode comes back when it plays
+        break;
       case 'playing':
         if (!sawVideo) { sawVideo = true; syncState(); }
         if (pageOn()) fill.auto(src);
         break;
       case 'ack': acks.add(d.nonce); break;
+      case 'switchServer': post(src, { type: 'serverReply', id: d.id, ok: switchServer(d) }); break;
       default: break;
     }
+  }
+
+  // The player says the server refused the top quality: click the next server
+  // in the same group (SUB / DUB) not tried for this episode in the last 10
+  // minutes, and give the new player the same start time (?time= on its
+  // address, which the site's player reads). False when there is none.
+  let resume = null, resumeObs = null;
+  function switchServer(d) {
+    const sv = SITE.servers;
+    if (!sv) return false;
+    const all = [...document.querySelectorAll(sv.item)];
+    const cur = all.find((li) => li.classList.contains('active'));
+    if (!cur) return false;
+    const grp = (li) => li.closest(sv.group) || li.parentElement;
+    const id = (li) => li.getAttribute('data-link-id') || li.textContent.trim();
+    const name = (li) => li.textContent.replace(/\s+/g, ' ').trim();
+    const key = 'acap-tried:' + location.pathname;
+    let tried = { at: 0, ids: [] };
+    try { tried = JSON.parse(sessionStorage.getItem(key)) || tried; } catch (e) { /* none yet */ }
+    if (Date.now() - tried.at > 600000) tried.ids = [];
+    if (!tried.ids.includes(id(cur))) tried.ids.push(id(cur));
+    const next = all.find((li) => grp(li) === grp(cur) && !tried.ids.includes(id(li)));
+    if (!next) return false;
+    tried.ids.push(id(next));
+    tried.at = Date.now();
+    try { sessionStorage.setItem(key, JSON.stringify(tried)); } catch (e) { /* blocked */ }
+    const pos = Math.floor(+d.pos || 0);
+    resume = { t: Math.max(0, pos - 1), until: Date.now() + 60000 };
+    watchResume();
+    toast(`${d.height ? d.height + 'p' : 'Stream'} refused on ${name(cur)} - switching to ${name(next)} at ${clock(pos)}`);
+    next.click();
+    return true;
+  }
+  function watchResume() {
+    if (resumeObs) return;
+    const fix = (f) => {
+      if (!resume || !f || f.tagName !== 'IFRAME' || !f.src) return;
+      if (Date.now() > resume.until) { resume = null; return; }
+      try {
+        const u = new URL(f.src, location.href);
+        if (u.hostname === location.hostname || u.searchParams.has('time')) return;
+        u.searchParams.set('time', String(resume.t));
+        resume = null;
+        f.src = u.href;
+      } catch (e) { /* odd address */ }
+    };
+    resumeObs = new MutationObserver((muts) => {
+      for (const m of muts) {
+        if (m.type === 'attributes') fix(m.target);
+        for (const n of m.addedNodes || []) {
+          if (n.tagName === 'IFRAME') fix(n);
+          else if (n.querySelectorAll) n.querySelectorAll('iframe').forEach(fix);
+        }
+      }
+      if (!resume || Date.now() > resume.until) { resume = null; resumeObs.disconnect(); resumeObs = null; }
+    });
+    resumeObs.observe(document.documentElement, { subtree: true, childList: true, attributes: true, attributeFilter: ['src'] });
   }
 
   function animeName() {
