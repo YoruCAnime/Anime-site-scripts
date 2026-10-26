@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Anime Capture
 // @namespace    https://github.com/YoruCAnime/Anime-site-scripts
-// @version      1.3.3
+// @version      1.4.0
 // @description  On anikototv.to video pages: ] screenshot (the best JPEG under 200 KB), = start recording, - stop, [ subtitles in captures on / off. Saved into your capture folder as "<date time> <anime> S1E2". The player fills the browser window when the video starts (Esc leaves, W toggles), and its controls fade 2 s after the mouse stops. Needs the small helper (helper.py) running on this PC.
 // @author       YoruCAnime
 // @homepageURL  https://github.com/YoruCAnime/Anime-site-scripts
@@ -65,13 +65,17 @@
     },
   ];
   const FILL_WINDOW = true;    // the player fills the browser window when a video starts playing
-  // JW players: switch from Auto to the highest quality. Off: when the server
-  // refuses that quality (error 233403) a forced quality stops the picture,
-  // while Auto just steps down. Auto reaches 1080p by itself on a good line.
-  const BEST_QUALITY = false;
-  // JW players start on Auto with a guess of 0.5 Mbit/s, so they open on a low
-  // quality and climb. This tells them the line is fast (in bit/s) so Auto
-  // opens at the top quality; it still steps down if it has to. 0 = off.
+  // JW players (anikoto's): pick the highest quality (1080p) as soon as the
+  // player lists it, for every episode. A quality picked by hand afterwards is
+  // kept until the next episode.
+  const BEST_QUALITY = true;
+  // If the server refuses part of the stream (JW error 233403 and the like),
+  // the picture would stop for good with only the sound going on. Instead the
+  // player reloads at the same moment (fresh access, top quality again). At
+  // most once a minute, so an episode that really is broken doesn't loop.
+  const RELOAD_ON_REFUSED = true;
+  // JW players guess 0.5 Mbit/s before they have measured the line, so their
+  // first pieces of video are low quality. This guess (bit/s) is fast. 0 = off.
   const START_BANDWIDTH = 50e6;
   const HIDE_CONTROLS_AFTER = 2000;   // ms without moving the mouse before the player's controls and the pointer fade (0 = never)
   const SUBS_DEFAULT = true;   // subtitles in captures until [ turns them off (remembered)
@@ -127,21 +131,10 @@
   });
   if (!IS_TOP) post(window.top, { type: 'ask' });
 
-  // JW Player keeps its settings in the player's storage ("jwplayer.*") and
-  // reads them when it starts, so they are set here before it loads.
-  // - Every time: its speed guess (START_BANDWIDTH), so Auto opens at the top.
-  // - Once: a quality picked by hand (or by 1.3.1 and older) goes back to Auto,
-  //   because a picked quality can't step down when the server refuses it
-  //   (error 233403 stops the picture). Picking one by hand later is kept.
-  if (!IS_TOP && !BEST_QUALITY) {
-    try {
-      if (START_BANDWIDTH > 0) localStorage.setItem('jwplayer.bandwidthEstimate', String(START_BANDWIDTH));
-      if (!GM_getValue('jwAutoReset2', false) && localStorage.getItem('jwplayer.qualityLabel') !== null) {
-        localStorage.removeItem('jwplayer.qualityLabel');
-        localStorage.removeItem('jwplayer.bitrateSelection');
-        GM_setValue('jwAutoReset2', true);
-      }
-    } catch (e) { /* storage blocked */ }
+  // JW Player reads its saved speed guess ("jwplayer.bandwidthEstimate") from
+  // the player's storage when it starts, so it is set here before it loads.
+  if (!IS_TOP && START_BANDWIDTH > 0) {
+    try { localStorage.setItem('jwplayer.bandwidthEstimate', String(START_BANDWIDTH)); } catch (e) { /* storage blocked */ }
   }
 
   // ---------------------------------------------------------------- keys
@@ -181,13 +174,13 @@
     const v = e.target;
     if (v.tagName !== 'VIDEO' || !longVideo(v)) return;
     toTop({ type: 'video' });
-    if (BEST_QUALITY) bestQuality();
+    jwHooks();
   }, true);
   document.addEventListener('playing', (e) => {
     const v = e.target;
     if (v.tagName !== 'VIDEO' || !longVideo(v)) return;
     toTop({ type: 'playing' });
-    if (BEST_QUALITY) bestQuality();
+    jwHooks();
   }, true);
 
   // Controls fade: 2 s after the mouse last moved (playing or paused), the
@@ -226,14 +219,17 @@
   }
   document.addEventListener('playing', () => wake(null), true);
 
-  // JW Player (anikoto's): switch from Auto to the highest quality once per
-  // source; picking another quality by hand afterwards is respected.
+  // JW Player (anikoto's): the highest quality for every source it loads
+  // (BEST_QUALITY), and a reload at the same moment when the server refuses
+  // the stream (RELOAD_ON_REFUSED).
   const tuned = new WeakSet();
-  function bestQuality() {
+  function jwHooks() {
     let p = null;
     try { const jw = unsafeWindow.jwplayer; if (typeof jw === 'function') p = jw(); } catch (e) { return; }
     if (!p || typeof p.getQualityLevels !== 'function' || tuned.has(p)) return;
     tuned.add(p);
+    if (RELOAD_ON_REFUSED) reloadWhenRefused(p);
+    if (!BEST_QUALITY) return;
     const pick = () => {
       try {
         const lv = p.getQualityLevels() || [];
@@ -247,6 +243,35 @@
     };
     pick();
     try { p.on('levels', pick); } catch (e) { /* old JW */ }
+  }
+
+  // JW error codes 23xxxx are the stream failing to load; ending in 403 /
+  // 410 / 401 the server refused it (its access ran out). The player's page
+  // takes a start time in its address (?time=), so reloading it there gets
+  // fresh access and carries on where the picture stopped.
+  function reloadWhenRefused(p) {
+    try {
+      p.on('error', (e) => {
+        const code = +(e && e.code) || 0;
+        if (code < 230000 || code >= 240000) return;
+        let pos = 0;
+        try { pos = +p.getPosition() || 0; } catch (err) { /* gone */ }
+        const v = mainVideo() || document.querySelector('video');
+        if (!pos && v) pos = v.currentTime || 0;
+        let last = 0;
+        try { last = +sessionStorage.getItem('acap-reload') || 0; } catch (err) { /* blocked */ }
+        if (Date.now() - last < 60000) {
+          toast(`The server refused this episode again (${code}).\nTry another server or reload the page.`, 'error');
+          return;
+        }
+        try { sessionStorage.setItem('acap-reload', String(Date.now())); } catch (err) { /* blocked */ }
+        const u = new URL(location.href);
+        u.searchParams.set('time', String(Math.max(0, Math.floor(pos) - 1)));
+        u.searchParams.set('autostart', 'true');
+        toast(`Stream refused (${code}) - reloading at ${clock(Math.floor(pos))}`);
+        setTimeout(() => location.replace(u.href), 700);
+      });
+    } catch (e) { /* old JW */ }
   }
 
   // ------------------------------------------------------------ the page
