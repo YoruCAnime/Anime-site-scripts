@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Anime Capture
 // @namespace    https://github.com/YoruCAnime/Anime-site-scripts
-// @version      1.3.1
+// @version      1.3.2
 // @description  On anikototv.to video pages: ] screenshot (the best JPEG under 200 KB), = start recording, - stop, [ subtitles in captures on / off. Saved into your capture folder as "<date time> <anime> S1E2". The player fills the browser window when the video starts (Esc leaves, W toggles), and its controls fade 2 s after the mouse stops. Needs the small helper (helper.py) running on this PC.
 // @author       YoruCAnime
 // @homepageURL  https://github.com/YoruCAnime/Anime-site-scripts
@@ -65,7 +65,10 @@
     },
   ];
   const FILL_WINDOW = true;    // the player fills the browser window when a video starts playing
-  const BEST_QUALITY = true;   // JW players: switch to the highest quality (sharper screenshots)
+  // JW players: switch from Auto to the highest quality. Off: when the server
+  // refuses that quality (error 233403) a forced quality stops the picture,
+  // while Auto just steps down. Auto reaches 1080p by itself on a good line.
+  const BEST_QUALITY = false;
   const HIDE_CONTROLS_AFTER = 2000;   // ms without moving the mouse before the player's controls and the pointer fade (0 = never)
   const SUBS_DEFAULT = true;   // subtitles in captures until [ turns them off (remembered)
   const KEY_SHOT = ']', KEY_START = '=', KEY_STOP = '-', KEY_SUBS = '[', KEY_FILL = 'w';
@@ -119,6 +122,19 @@
     else if (d.type === 'cmd') runCmd(d);
   });
   if (!IS_TOP) post(window.top, { type: 'ask' });
+
+  // Up to 1.3.1 the script switched JW to its top quality, and JW remembers
+  // that choice in the player's storage (even with the script off). Once, in
+  // the frame that has it, put it back on Auto.
+  if (!IS_TOP && !BEST_QUALITY) {
+    try {
+      if (!GM_getValue('jwAutoReset', false) && localStorage.getItem('jwplayer.qualityLabel') !== null) {
+        localStorage.removeItem('jwplayer.qualityLabel');
+        localStorage.removeItem('jwplayer.bitrateSelection');
+        GM_setValue('jwAutoReset', true);
+      }
+    } catch (e) { /* storage blocked */ }
+  }
 
   // ---------------------------------------------------------------- keys
   // ] = - (and W, Esc) on video pages; typing in a text box and Ctrl / Alt
@@ -648,7 +664,10 @@
     const png = await new Promise((res) => { try { c.toBlob(res, 'image/png'); } catch (e) { res(null); } });
     if (!png) { toast('Screenshot not saved: could not copy the picture', 'error'); return; }
     const r = await Helper.post(`/shot?name=${encodeURIComponent(meta.name)}&ep=${encodeURIComponent(meta.ep)}&t=${meta.t}`, png);
-    if (r.ok) toast(`\u2713 Screenshot saved${subs ? ' (subtitles)' : ''}`, 'ok');
+    // The player picks the quality (Auto), so say so when a shot is below full HD.
+    const size = r.w < 1900 ? `${r.h}p` : '';
+    const extra = [size, subs ? 'subtitles' : ''].filter(Boolean).join(', ');
+    if (r.ok) toast(`\u2713 Screenshot saved${extra ? ` (${extra})` : ''}`, 'ok');
     else toast(`Screenshot not saved: ${r.error || 'no answer'}`, 'error');
   }
 
