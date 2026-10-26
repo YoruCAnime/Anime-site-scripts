@@ -12,8 +12,10 @@ time (the port is taken).
 
   pythonw helper.py          (http://127.0.0.1:8767)
 
-Capture folder: settings.json next to this file, {"save_folder": "D:\\anime"}
-(copy settings.example.json). Without it: Pictures\Anime captures.
+Capture folder: settings.json next to this file, {"save_folder": "D:\Anime captures"}
+(copy settings.example.json; a pasted path with single backslashes is fine). It is
+read again for every capture, so a change works at once. Without it:
+Pictures\Anime captures.
 
 Safety
 - Listens on 127.0.0.1 only, and only answers Host 127.0.0.1 / localhost.
@@ -58,23 +60,35 @@ if sys.stdout is None:
 if sys.stderr is None:
     sys.stderr = open(os.devnull, 'w')
 
-VERSION = '1.2.0'
+VERSION = '1.2.1'
 HERE = os.path.dirname(os.path.abspath(__file__))
 PORT = int(os.environ.get('ACAP_PORT', 8767))                                      # env: tests
 
 
-def _save_folder():
+def read_save_folder(path):
+    r"""The "save_folder" in settings.json, or None. A Windows path pasted as
+    it is ("D:\Anime captures", single backslashes) isn't valid JSON, so that
+    is read too."""
     try:
-        with open(os.path.join(HERE, 'settings.json'), encoding='utf8') as f:
-            folder = json.load(f).get('save_folder')
-        if folder:
-            return os.path.expandvars(os.path.expanduser(folder))
-    except (OSError, ValueError, AttributeError):
-        pass
-    return os.path.join(os.path.expanduser('~'), 'Pictures', 'Anime captures')
+        with open(path, encoding='utf-8-sig') as f:
+            text = f.read()
+    except OSError:
+        return None
+    try:
+        folder = json.loads(text).get('save_folder')
+    except (ValueError, AttributeError):
+        m = re.search(r'"save_folder"\s*:\s*"([^"]+)"', text)
+        folder = m.group(1).replace('\\\\', '\\') if m else None
+    folder = str(folder or '').strip()
+    return os.path.expandvars(os.path.expanduser(folder)) if folder else None
 
 
-CAPTURE_DIR = os.environ.get('ACAP_DIR') or _save_folder()
+DEFAULT_FOLDER = os.path.join(os.path.expanduser('~'), 'Pictures', 'Anime captures')
+
+
+def capture_dir():
+    """Read again for every capture, so a changed settings.json works at once."""
+    return os.environ.get('ACAP_DIR') or read_save_folder(os.path.join(HERE, 'settings.json')) or DEFAULT_FOLDER
 DATA = os.environ.get('ACAP_DATA') or os.path.join(
     os.environ.get('LOCALAPPDATA') or os.path.join(os.path.expanduser('~'), 'AppData', 'Local'), 'AnimeCapture')
 TEST_ORIGIN = os.environ.get('ACAP_TEST_ORIGIN', '')     # tests only: a page allowed to call like the userscript
@@ -169,10 +183,11 @@ def reserve(base, ext, also=()):
     """A new file in the capture folder, created empty so nothing else can take
     it: "<base><ext>", or "<base> (2)<ext>" ... Paths in `also` (suffixes added
     to the name) must be free too."""
-    os.makedirs(CAPTURE_DIR, exist_ok=True)
+    folder = capture_dir()
+    os.makedirs(folder, exist_ok=True)
     with _name_lock:
         for i in range(1, 10000):
-            p = os.path.join(CAPTURE_DIR, (base if i == 1 else f'{base} ({i})') + ext)
+            p = os.path.join(folder, (base if i == 1 else f'{base} ({i})') + ext)
             if os.path.exists(p) or any(os.path.exists(p + a) for a in also):
                 continue
             open(p, 'xb').close()
@@ -526,7 +541,7 @@ class Handler(BaseHTTPRequestHandler):
             if self.headers.get('X-ACap-Key') != KEY:
                 return self.send(403, {'error': 'key'})
             if p == '/ping':
-                return self.send(200, {'ok': True, 'version': VERSION, 'dir': CAPTURE_DIR,
+                return self.send(200, {'ok': True, 'version': VERSION, 'dir': capture_dir(),
                                        'ffmpeg': bool(find_ffmpeg())})
             if method != 'POST':
                 return self.send(404, {'error': 'unknown'})
@@ -558,7 +573,10 @@ class Handler(BaseHTTPRequestHandler):
 
             b = json.loads(self.body(10000) or b'{}')
             if p == '/rec/start':
-                if shutil.disk_usage(CAPTURE_DIR if os.path.isdir(CAPTURE_DIR) else os.path.dirname(CAPTURE_DIR)).free < MIN_FREE:
+                folder = capture_dir()
+                while folder and not os.path.isdir(folder) and os.path.dirname(folder) != folder:
+                    folder = os.path.dirname(folder)          # not made yet: check the drive it will be on
+                if os.path.isdir(folder) and shutil.disk_usage(folder).free < MIN_FREE:
                     return self.send(507, {'error': 'the drive is nearly full'})
                 r = Recording(b.get('name'), b.get('ep'), b.get('t'), b.get('mime'))
                 with _recs_lock:
@@ -602,7 +620,7 @@ def main():
     except OSError as e:
         log(f'not started, port {PORT} taken ({e.strerror}) - already running?')
         return
-    log(f'helper {VERSION} listening on 127.0.0.1:{PORT}, saving to {CAPTURE_DIR}')
+    log(f'helper {VERSION} listening on 127.0.0.1:{PORT}, saving to {capture_dir()}')
     threading.Thread(target=recover, daemon=True).start()
     threading.Thread(target=watchdog, daemon=True).start()
     srv.serve_forever()
