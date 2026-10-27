@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Atsu Next Chapters
 // @namespace    https://github.com/YoruCAnime/Anime-site-scripts
-// @version      1.1.1
+// @version      1.2.0
 // @description  On atsu.moe's home page: a timeline down the left side counting down to the next chapter of every ongoing series you're caught up on (your Reading bookmarks), predicted from each series' own release rhythm. New chapters you haven't read yet sit at the top; late series and ones that look like they're on a break are marked.
 // @author       YoruCAnime
 // @homepageURL  https://github.com/YoruCAnime/Anime-site-scripts
@@ -58,24 +58,27 @@
       unread: unread.length,
       firstUnread: first === null ? null : { num: first, id: idOf.get(first), at: firstAt.get(first) },
       rel: rel.slice(0, 10),
+      newest: ch.reduce((m, c) => Math.max(m, c.createdAt || 0), 0),   // newest upload of any group (atsu's clock)
       fetchedAt: Date.now(),
     };
   }
 
-  // how often it comes out, from the gaps between its last releases
+  // how often it comes out, from the gaps between its last releases (newest first)
   function rhythm(rel) {
     const gaps = [];
     for (let i = 1; i < Math.min(rel.length, 9); i++) gaps.push((rel[i - 1] - rel[i]) / DAY);
     if (!gaps.length) return null;
-    const med = [...gaps].sort((a, b) => a - b)[gaps.length >> 1];
-    let period = med, label;
-    if (med >= 5.5 && med <= 8.5) { period = 7; label = 'weekly'; }
-    else if (med >= 12.5 && med <= 16) { period = 14; label = 'every 2 weeks'; }
-    else if (med >= 25 && med <= 36) label = 'about monthly';
-    else label = 'every ~' + Math.max(1, Math.round(med)) + ' days';
-    const tol = Math.max(1.5, period * 0.2);
-    const steady = gaps.filter((g) => Math.abs(g - period) <= tol).length / gaps.length;
-    return { period, label, sure: gaps.length >= 3 && steady >= 0.6 };
+    const median = (a) => [...a].sort((x, y) => x - y)[a.length >> 1];
+    const med = median(gaps);
+    const label = med >= 5.5 && med <= 8.5 ? 'weekly' : med >= 12.5 && med <= 16 ? 'every 2 weeks'
+      : med >= 25 && med <= 36 ? 'about monthly' : 'every ~' + Math.max(1, Math.round(med)) + ' days';
+    // share of gaps close to a given period
+    const steadyAt = (p) => gaps.filter((g) => Math.abs(g - p) <= Math.max(1.5, p * 0.2)).length / gaps.length;
+    // a steady series follows its latest gaps (a "weekly" one that keeps coming after 6.7 days is due after 6.7);
+    // an uneven one keeps its usual rhythm
+    const recent = median(gaps.slice(0, 5));
+    const period = Math.abs(recent - med) <= Math.max(1, med * 0.15) && steadyAt(recent) >= 0.6 ? recent : med;
+    return { period, label, sure: gaps.length >= 3 && steadyAt(period) >= 0.6 };
   }
 
   // null = not one of your weekly reads (finished, never started, or you're several chapters behind)
@@ -120,7 +123,12 @@
       running++;
       fetch('/api/manga/page?id=' + encodeURIComponent(id), { credentials: 'same-origin' })
         .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
-        .then((j) => { if (j && j.mangaPage) cache[id] = summarize(id, j.mangaPage); })
+        .then((j) => {
+          if (!j || !j.mangaPage) return;
+          const old = cache[id];
+          cache[id] = summarize(id, j.mangaPage);
+          if (old) { cache[id].seenUpd = old.seenUpd; cache[id].seenRead = old.seenRead; }
+        })
         .catch(() => { /* tried again next time */ })
         .finally(() => { running--; saveSoon(); renderSoon(); setTimeout(pump, 120); });
     }
@@ -143,6 +151,32 @@
   function refreshStale() {
     const now = Date.now();
     enqueue(bm.ids.filter((id) => stale(cache[id], now)));
+  }
+
+  // atsu's own "Updates For You" list: one request with the newest upload (and your last read) of every bookmarked
+  // series. Anything that changed since we last looked at a series is looked at again straight away, so a chapter
+  // that comes out early shows up within minutes instead of waiting for its predicted time.
+  let feedAt = 0;
+  async function checkFeed(force) {
+    if (!force && Date.now() - feedAt < 2 * MIN) return;
+    feedAt = Date.now();
+    try {
+      const r = await fetch('/api/home2/updates?offset=0&limit=60', { credentials: 'same-origin' });
+      if (!r.ok) return;
+      const j = await r.json();
+      // atsu's times are compared with atsu's times (never this PC's clock, which may be a little off)
+      for (const it of j.items || []) {
+        const s = cache[it.id];
+        if (!s) continue;
+        const upd = it.updatedAt || 0;
+        const read = it.continueReading && it.continueReading.ts ? it.continueReading.ts : 0;
+        let look = s.seenUpd == null ? upd > (s.newest || 0) + 5 * MIN : upd > s.seenUpd;      // a new upload
+        look = look || (s.seenRead == null ? read > s.fetchedAt : read > s.seenRead);          // you read something
+        s.seenUpd = upd; s.seenRead = read;
+        if (look) s.fetchedAt = 0;
+      }
+      saveSoon();
+    } catch (e) { /* offline: the regular checks still run */ }
   }
 
   // ---------- words ----------
@@ -349,6 +383,11 @@
     render();
     await refreshBookmarks(false);
     render();
+    await checkFeed(true);
+    refreshStale();
+  }
+  async function recheck() {
+    await checkFeed(false);
     refreshStale();
   }
   setInterval(() => {
@@ -358,10 +397,10 @@
     wasHome = home;
   }, 1000);
   setInterval(() => { if (panel) tick(); }, 5000);
-  setInterval(() => { if (panel && onHome()) refreshStale(); }, 60000);
+  setInterval(() => { if (panel && onHome() && !document.hidden) recheck(); }, 60000);   // the list itself at most every 2 min
   window.addEventListener('resize', renderSoon);
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && foldOpen) { foldOpen = false; place(); } });
-  document.addEventListener('visibilitychange', () => { if (!document.hidden && onHome()) { refreshBookmarks(false).then(() => { refreshStale(); render(); }); } });
+  document.addEventListener('visibilitychange', () => { if (!document.hidden && onHome()) { refreshBookmarks(false).then(() => { recheck(); render(); }); } });
 
   // ---------- looks (atsu's own colours) ----------
   const css = document.createElement('style');

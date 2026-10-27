@@ -44,9 +44,13 @@ A timeline down the left side of atsu's home page (sign in to atsu first). For e
 Hover a card and click `✕` to hide a series, and `↻` checks again now. In a narrow window the panel folds into a
 small `⏱` tab on the left edge.
 
-**Where the times come from:** atsu's own upload history. Each series' next chapter is predicted from the gaps
-between its last releases (weekly, every 2 weeks, monthly...), so it shows when chapters usually land on atsu. Fan
-translations have no official schedule, so treat the times as good estimates, not promises.
+**Where the times come from:** atsu itself.
+- **New chapters:** atsu's own "Updates For You" list. The script checks it when you open the home page and every
+  2 minutes while the home page is open, so a chapter that comes out early moves to **Out now** within minutes.
+- **Countdowns:** each series' upload history on atsu. The next chapter is predicted from the gaps between its last
+  releases (weekly, every 2 weeks, monthly...); steady series follow their latest gaps. Fan translations have no
+  official schedule, so treat the countdowns as good estimates, not promises.
 
 The first home-page visit looks at all your Reading bookmarks once, which takes a few seconds. After that the
-script reuses what it saved and only re-checks series that are due soon. It does nothing while you read a chapter.
+script reuses what it saved and only looks at a series again when it's due, gets a new upload or you read it. It
+does nothing while you read a chapter.
