@@ -53,4 +53,5 @@ small `⏱` tab on the left edge.
 
 The first home-page visit looks at all your Reading bookmarks once, which takes a few seconds. After that the
 script reuses what it saved and only looks at a series again when it's due, gets a new upload or you read it. It
-does nothing while you read a chapter.
+does nothing while you read a chapter and pauses while the atsu tab is in the background. Scrolling the home page
+stays as smooth as without it (the panel sits on its own layer).

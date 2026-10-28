@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Atsu Next Chapters
 // @namespace    https://github.com/YoruCAnime/Anime-site-scripts
-// @version      1.2.0
+// @version      1.2.1
 // @description  On atsu.moe's home page: a timeline down the left side counting down to the next chapter of every ongoing series you're caught up on (your Reading bookmarks), predicted from each series' own release rhythm. New chapters you haven't read yet sit at the top; late series and ones that look like they're on a break are marked.
 // @author       YoruCAnime
 // @homepageURL  https://github.com/YoruCAnime/Anime-site-scripts
@@ -290,7 +290,7 @@
       <div class="nc-info"><div class="nc-title">${esc(s.title)}</div>
       <div class="nc-when"><b class="nc-count">${left}</b></div>
       <div class="nc-meta" title="${esc(nextNum(s.last))} ${late ? 'was due' : 'expected'} ${esc(when(c.next))} · comes out ${esc(c.r.label)}${c.r.sure ? '' : ' (rough guess)'}">${nextNum(s.last)} · ${late ? 'was due ' : ''}${when(c.next)}</div></div>
-      <div class="nc-bar"><i style="width:${(fill * 100).toFixed(1)}%"></i></div>${hideBtn}</a>`;
+      <div class="nc-bar"><i style="transform:scaleX(${fill.toFixed(3)})"></i></div>${hideBtn}</a>`;
   }
 
   function quietHTML(it, now) {
@@ -369,9 +369,13 @@
       const next = +el.dataset.next, period = +el.dataset.period;
       const late = now > next;
       if (late !== el.classList.contains('nc-late')) { rebuild = true; break; }
-      el.querySelector('.nc-count').textContent = late ? 'late ' + countdown(now - next) : (el.dataset.sure === '1' ? '' : '≈ ') + countdown(next - now);
+      // only touch the page when something visible changed (most ticks change nothing)
+      const count = el.querySelector('.nc-count');
+      const text = late ? 'late ' + countdown(now - next) : (el.dataset.sure === '1' ? '' : '≈ ') + countdown(next - now);
+      if (count.textContent !== text) count.textContent = text;
       const bar = el.querySelector('.nc-bar i');
-      if (bar) bar.style.width = (late ? 0 : Math.max(0, Math.min(1, (next - now) / (period * DAY))) * 100).toFixed(1) + '%';
+      const scale = 'scaleX(' + (late ? 0 : Math.max(0, Math.min(1, (next - now) / (period * DAY)))).toFixed(3) + ')';
+      if (bar && bar.style.transform !== scale) bar.style.transform = scale;
     }
     if (rebuild) render();
   }
@@ -396,7 +400,7 @@
     if (!home && wasHome) removePanel();
     wasHome = home;
   }, 1000);
-  setInterval(() => { if (panel) tick(); }, 5000);
+  setInterval(() => { if (panel && !document.hidden) tick(); }, 5000);          // nothing while the tab is in the background
   setInterval(() => { if (panel && onHome() && !document.hidden) recheck(); }, 60000);   // the list itself at most every 2 min
   window.addEventListener('resize', renderSoon);
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && foldOpen) { foldOpen = false; place(); } });
@@ -408,6 +412,7 @@
     #nc-panel { --nc-accent: var(--color-accent, #8e7ce6); --nc-card: var(--color-slate2, #282828); --nc-card2: var(--color-slate3, #313234);
       --nc-fg: var(--color-foreground, #b8bcc0); --nc-fg2: var(--color-foreground2, #f9f8f6); --nc-amber: #e0a458; --nc-grey: #7b8086;
       position: fixed; left: 10px; bottom: 12px; z-index: 20; display: flex; flex-direction: column;
+      contain: layout paint style; will-change: transform;   /* its own layer: scrolling atsu never repaints it */
       font: 12px/1.3 Geist, system-ui, sans-serif; color: var(--nc-fg); }
     #nc-panel.nc-fold { display: none; }
     #nc-panel.nc-fold.nc-open { display: flex; background: var(--color-slate, #1d1e20); border-radius: 10px; padding: 10px;
@@ -440,7 +445,7 @@
     #nc-panel .nc-more { color: var(--nc-fg); font-size: 11px; }
     #nc-panel .nc-out { box-shadow: inset 3px 0 0 var(--nc-accent); }
     #nc-panel .nc-bar { position: absolute; left: 7px; right: 7px; bottom: 4px; height: 2px; border-radius: 2px; background: rgba(255, 255, 255, .07); }
-    #nc-panel .nc-bar i { display: block; height: 100%; border-radius: 2px; background: var(--nc-accent); transition: width 1s linear; }
+    #nc-panel .nc-bar i { display: block; height: 100%; border-radius: 2px; background: var(--nc-accent); transform-origin: left center; }
     #nc-panel .nc-hide { position: absolute; top: 3px; right: 3px; width: 18px; height: 18px; border: 0; border-radius: 4px; padding: 0;
       background: var(--nc-card2); color: var(--nc-grey); font-size: 10px; cursor: pointer; opacity: 0; transition: opacity .15s; }
     #nc-panel .nc-card:hover .nc-hide, #nc-panel .nc-row:hover .nc-hide { opacity: 1; }
