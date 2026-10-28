@@ -2,9 +2,10 @@
 
 Userscripts for anime streaming sites.
 
-## Anikoto Capture (anikototv.to)
+## Anime Capture (anikototv.to, reanime.to)
 
 Screenshots and recordings of the episode you're watching, saved straight into **a folder you choose** (Windows).
+If a server refuses the stream, the script switches to the site's next server and carries on at the same moment.
 
 | Key | What it does |
 |---|---|

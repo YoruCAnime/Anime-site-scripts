@@ -1,14 +1,18 @@
 // ==UserScript==
 // @name         Anime Capture
 // @namespace    https://github.com/YoruCAnime/Anime-site-scripts
-// @version      1.5.0
-// @description  On anikototv.to video pages: ] screenshot (the best JPEG under 200 KB), = start recording, - stop, [ subtitles in captures on / off. Saved into your capture folder as "<date time> <anime> S1E2". The player fills the browser window when the video starts (Esc leaves, W toggles), and its controls fade 2 s after the mouse stops. Needs the small helper (helper.py) running on this PC.
+// @version      1.6.0
+// @description  On anikototv.to and reanime.to video pages: ] screenshot (the best JPEG under 200 KB), = start recording, - stop, [ subtitles in captures on / off. Saved into your capture folder as "<date time> <anime> S1E2". The player fills the browser window when the video starts (Esc leaves, W toggles), and its controls fade 2 s after the mouse stops. Needs the small helper (helper.py) running on this PC.
 // @author       YoruCAnime
 // @homepageURL  https://github.com/YoruCAnime/Anime-site-scripts
 // @match        *://anikototv.to/*
 // @match        *://*.anikototv.to/*
 // @match        *://megaplay.buzz/*
 // @match        *://*.megaplay.buzz/*
+// @match        *://reanime.to/*
+// @match        *://*.reanime.to/*
+// @match        *://flixcloud.cc/*
+// @match        *://*.flixcloud.cc/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -22,7 +26,8 @@
 /*
  * How it works
  * ------------
- * The anime plays inside the site's player frame (anikoto: megaplay.buzz), so
+ * The anime plays inside the site's player frame (anikoto: megaplay.buzz,
+ * reanime: flixcloud.cc), so
  * this script runs in the page AND in its frames. The page is the boss: a key
  * pressed anywhere goes to the page, which adds the anime name and episode
  * and tells every frame; the frame holding the playing video does the work.
@@ -39,8 +44,7 @@
  *
  * The keys only work on video pages of the sites below; everywhere else they
  * type as usual. Tampermonkey only loads the script on the sites in the
- * @match lines (anikoto and megaplay.buzz, the player all its servers use),
- * nowhere else. Adding a site: add a line to SITES, e.g. { host: 'example.com' },
+ * @match lines (the sites and their player sites), nowhere else. Adding a site: add a line to SITES, e.g. { host: 'example.com' },
  * and @match lines for the site and for the site its player comes from.
  */
 (function () {
@@ -54,9 +58,11 @@
   //        Without them: the page title, and "ep-5" / "episode-5" / "?ep=5" in the address.
   // fill:  the player box that fills the browser window when the video starts
   //        (a CSS selector; true = the player's frame; left out = never).
-  // servers: the site's server buttons (item) and the box holding one group of
-  //        them (group, e.g. SUB / DUB); the current one has class "active".
-  //        When a server refuses the top quality the script clicks the next one.
+  // servers: the site's server buttons (item), the box holding one group of
+  //        them (group, e.g. SUB / DUB; left out = the buttons' own box) and
+  //        the class the current one has (active, default "active"). Hidden
+  //        copies (a phone layout) are skipped. When a server refuses the
+  //        stream the script clicks the next one in the same group.
   const SITES = [
     {
       host: 'anikototv.to',
@@ -66,6 +72,18 @@
       fill: '#player-wrapper',
       fillCss: '#player-wrapper #player{position:absolute!important;inset:0!important;width:100%!important;height:100%!important}',
       servers: { item: '.servers li[data-link-id]', group: '.type' },
+    },
+    {
+      host: 'reanime.to',
+      video: /^\/watch\/./,
+      // "The Detective Is Already Dead Season 2 - Episode 4 | Re:ANIME"
+      name: () => document.title.replace(/\s*\|\s*Re:?\s*ANIME.*$/i, '').replace(/\s+-\s+Episode\s+[\d.]+.*$/i, '').trim(),
+      ep: () => {
+        const e = new URLSearchParams(location.search).get('ep');
+        return /^[\d.]+$/.test(e || '') ? e : attr('a.ep-card.is-playing[data-episode]', 'data-episode');
+      },
+      fill: '#player-wrapper',
+      servers: { item: 'button.server-btn-enhanced', active: 'bg-primary' },
     },
   ];
   const FILL_WINDOW = true;    // the player fills the browser window when a video starts playing
@@ -130,7 +148,10 @@
     if (!d || typeof d !== 'object' || d.tag !== TAG) return;
     if (IS_TOP) { if (e.source && e.source !== window) onTopMsg(d, e.source); return; }
     if (e.source !== window.top) return;            // orders only come from the page
-    if (d.type === 'state') { on = !!d.on; fillKey = !!d.fill; subsOn = !!d.subs; }
+    if (d.type === 'state') {
+      on = !!d.on; fillKey = !!d.fill; subsOn = !!d.subs;
+      if (typeof d.resume === 'number' && pendingResume == null) { pendingResume = d.resume; applyResume(); }
+    }
     else if (d.type === 'serverReply') { const f = serverWait.get(d.id); if (f) { serverWait.delete(d.id); f(!!d.ok); } }
     else if (d.type === 'cmd') runCmd(d);
   });
@@ -292,56 +313,111 @@
   let refusing = false;
   function reloadWhenRefused(p) {
     try {
-      p.on('error', async (e) => {
+      p.on('error', (e) => {
         const code = +(e && e.code) || 0;
-        if (code < 230000 || code >= 240000 || refusing) return;
-        refusing = true;
+        if (code < 230000 || code >= 240000) return;
         let pos = 0;
         try { pos = +p.getPosition() || 0; } catch (err) { /* gone */ }
-        const v = mainVideo() || document.querySelector('video');
-        if (!pos && v) pos = v.currentTime || 0;
-        const s = qState(), now = Date.now();
-        const reload = (msg) => {
-          saveQState(s);
-          const u = new URL(location.href);
-          u.searchParams.set('time', String(Math.max(0, Math.floor(pos) - 1)));
-          u.searchParams.set('autostart', 'true');
-          toast(msg);
-          setTimeout(() => location.replace(u.href), 700);
-        };
-        // The quality that failed: the one picked, else what was playing, else the top one allowed.
-        let lv = [];
-        try { lv = p.getQualityLevels() || []; } catch (err) { /* gone */ }
-        let cur = 0;
-        try { cur = levelHeight(lv[p.getCurrentQuality()]); } catch (err) { /* gone */ }
-        if (!cur) { try { cur = +((p.getVisualQuality() || {}).level || {}).height || 0; } catch (err) { /* old JW */ } }
-        const heights = lv.map(levelHeight).filter((h) => h && (!s.cap || h < s.cap)).sort((a, b) => b - a);
-        if (!cur) cur = heights[0] || 0;
-        if (!s.cap && await askServerSwitch(pos, cur, code)) return;     // the page is changing server
-        if (!s.at || now - s.at > 120000) {
-          s.at = now;
-          reload(`Stream refused (${code}) - reloading at ${clock(Math.floor(pos))}`);
-          return;
-        }
-        const lower = heights.filter((h) => h < cur);
-        s.at = now;
-        if (!lower.length) {
-          saveQState(s);
-          toast(`The server is refusing this episode (${code}).\nTry another server (HD-2 / Vidstream).`, 'error');
-          return;
-        }
-        s.cap = cur;
-        reload(`${cur}p refused by the server - switching to ${lower[0]}p at ${clock(Math.floor(pos))}`);
+        handleRefused(code, pos, p);
       });
     } catch (e) { /* old JW */ }
   }
+
+  // Other players (reanime's flixcloud) replace themselves with their own
+  // message when the stream is refused: "This video file cannot be played.
+  // (fragLoadError)". A short page with such a message and no video playing
+  // counts as a refusal (checked when the frame changes, at most twice a second).
+  const REFUSED_TEXT = /cannot be played|fragLoadError|manifestLoadError|levelLoadError|keyLoadError|networkError/i;
+  let lastPos = 0;
+  document.addEventListener('timeupdate', (e) => {
+    const v = e.target;
+    if (v.tagName === 'VIDEO' && longVideo(v) && v.currentTime > 0) lastPos = v.currentTime;
+  }, true);
+  if (!IS_TOP) {
+    let check = 0;
+    const look = () => {
+      check = 0;
+      if (refusing || !on || mainVideo() || !document.body) return;
+      const t = document.body.innerText || '';
+      const m = t.length < 400 && t.match(REFUSED_TEXT);
+      if (m) handleRefused(m[0], lastPos, null);
+    };
+    const start = () => new MutationObserver(() => { if (!check) check = setTimeout(look, 500); })
+      .observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+    if (document.documentElement) start(); else document.addEventListener('DOMContentLoaded', start);
+  }
+
+  // The steps above, for any player (p = JW's API, or null).
+  async function handleRefused(code, pos, p) {
+    if (refusing) return;
+    refusing = true;
+    const v = mainVideo() || document.querySelector('video');
+    if (!pos && v) pos = v.currentTime || 0;
+    if (!pos) pos = lastPos;
+    const s = qState(), now = Date.now();
+    const reload = (msg) => {
+      s.resume = Math.max(0, Math.floor(pos) - 1);       // for players that don't read ?time=
+      s.resumeSet = Date.now();
+      saveQState(s);
+      const u = new URL(location.href);
+      u.searchParams.set('time', String(s.resume));
+      u.searchParams.set('autostart', 'true');
+      toast(msg);
+      setTimeout(() => location.replace(u.href), 700);
+    };
+    // The quality that failed (JW only): the one picked, else what was playing, else the top one allowed.
+    let lv = [], cur = 0;
+    if (p) {
+      try { lv = p.getQualityLevels() || []; } catch (err) { /* gone */ }
+      try { cur = levelHeight(lv[p.getCurrentQuality()]); } catch (err) { /* gone */ }
+      if (!cur) { try { cur = +((p.getVisualQuality() || {}).level || {}).height || 0; } catch (err) { /* old JW */ } }
+    }
+    const heights = lv.map(levelHeight).filter((h) => h && (!s.cap || h < s.cap)).sort((a, b) => b - a);
+    if (!cur) cur = heights[0] || 0;
+    if (!s.cap && await askServerSwitch(pos, cur, code)) return;     // the page is changing server
+    if (!s.at || now - s.at > 120000) {
+      s.at = now;
+      reload(`Stream refused (${code}) - reloading at ${clock(Math.floor(pos))}`);
+      return;
+    }
+    const lower = heights.filter((h) => h < cur);
+    s.at = now;
+    if (!lower.length) {
+      saveQState(s);
+      toast(`The server is refusing this episode (${code}).\nTry another server, or reload the page later.`, 'error');
+      return;
+    }
+    s.cap = cur;
+    reload(`${cur}p refused by the server - switching to ${lower[0]}p at ${clock(Math.floor(pos))}`);
+  }
+
+  // Carry on at a given moment after a server change or a reload: the page
+  // passes it in its state message, a reload leaves it in this player's
+  // session storage. Seeks the main video there once it can play.
+  let pendingResume = null;
+  {
+    const s = qState();
+    if (s.resume != null && Date.now() - (s.resumeSet || 0) < 60000) pendingResume = s.resume;
+    if (s.resume != null) { delete s.resume; delete s.resumeSet; saveQState(s); }
+  }
+  function applyResume() {
+    if (pendingResume == null) return;
+    const v = mainVideo();
+    if (!v) return;
+    const t = pendingResume;
+    pendingResume = null;
+    if (v.currentTime < Math.max(2, t - 3)) { try { v.currentTime = t; } catch (e) { /* not seekable yet */ } }
+    toTop({ type: 'resumed' });
+  }
+  document.addEventListener('canplay', applyResume, true);
 
   // ------------------------------------------------------------ the page
   let sawVideo = false, lastOn = null;
   const acks = new Set();
   function pageOn() { return SITE.video ? SITE.video.test(location.pathname) : sawVideo; }
   function fillAllowed() { return FILL_WINDOW && !!SITE.fill; }
-  const stateMsg = () => ({ type: 'state', on: pageOn(), fill: fillAllowed(), subs: subsOn });
+  const stateMsg = () => ({ type: 'state', on: pageOn(), fill: fillAllowed(), subs: subsOn,
+    resume: resumeAt && Date.now() < resumeAt.until ? resumeAt.t : null });
 
   // Tells the frames when the page becomes / stops being a video page (the
   // site changes episodes without reloading), and keeps window mode on its box.
@@ -370,25 +446,31 @@
         break;
       case 'ack': acks.add(d.nonce); break;
       case 'switchServer': post(src, { type: 'serverReply', id: d.id, ok: switchServer(d) }); break;
+      case 'resumed': resumeAt = null; break;
       default: break;
     }
   }
 
-  // The player says the server refused the top quality: click the next server
-  // in the same group (SUB / DUB) not tried for this episode in the last 10
-  // minutes, and give the new player the same start time (?time= on its
-  // address, which the site's player reads). False when there is none.
-  let resume = null, resumeObs = null;
+  // The player says the server refused the stream: click the next server in
+  // the same group (SUB / DUB) not tried for this episode in the last 10
+  // minutes, and give the new player the same start time - ?time= on its
+  // address (anikoto's player reads it) and, for other players, in the state
+  // message, so the new player seeks there itself. False when there is none.
+  let resume = null, resumeObs = null, resumeAt = null;
   function switchServer(d) {
     const sv = SITE.servers;
     if (!sv) return false;
-    const all = [...document.querySelectorAll(sv.item)];
-    const cur = all.find((li) => li.classList.contains('active'));
+    const shownBtn = (el) => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+    const all = [...document.querySelectorAll(sv.item)].filter(shownBtn);     // not the hidden phone copies
+    const cur = all.find((li) => li.classList.contains(sv.active || 'active'));
     if (!cur) return false;
-    const grp = (li) => li.closest(sv.group) || li.parentElement;
+    const grp = (li) => (sv.group && li.closest(sv.group)) || li.parentElement;
     const id = (li) => li.getAttribute('data-link-id') || li.textContent.trim();
     const name = (li) => li.textContent.replace(/\s+/g, ' ').trim();
-    const key = 'acap-tried:' + location.pathname;
+    // Per episode: reanime keeps the episode (and the server) in ?ep= / &server=.
+    const here = new URL(location.href);
+    here.searchParams.delete('server');
+    const key = 'acap-tried:' + here.pathname + here.search;
     let tried = { at: 0, ids: [] };
     try { tried = JSON.parse(sessionStorage.getItem(key)) || tried; } catch (e) { /* none yet */ }
     if (Date.now() - tried.at > 600000) tried.ids = [];
@@ -400,6 +482,7 @@
     try { sessionStorage.setItem(key, JSON.stringify(tried)); } catch (e) { /* blocked */ }
     const pos = Math.floor(+d.pos || 0);
     resume = { t: Math.max(0, pos - 1), until: Date.now() + 60000 };
+    resumeAt = { t: resume.t, until: resume.until };     // for players that don't read ?time=
     watchResume();
     toast(`${d.height ? d.height + 'p' : 'Stream'} refused on ${name(cur)} - switching to ${name(next)} at ${clock(pos)}`);
     next.click();
@@ -650,9 +733,10 @@
   // "caption" / "subtitle" box over the video), the browser's own subtitles
   // (text tracks), and subtitle canvases (libass / JASSUB, styled .ass subs).
   const CUE_SEL = '.jw-text-track-cue, .jw-captions-text, .vjs-text-track-cue, .plyr__caption, .art-subtitle-line, ' +
-    '.shaka-text-container span';
+    '.art-subtitle, .shaka-text-container span';
   const CUE_GUESS = '[class*="caption" i], [class*="subtitle" i]';
-  const NOT_CUE = 'button, [role="button"], [role^="menu"], [class*="setting" i], [class*="menu" i], .jw-controlbar, .jw-tooltip';
+  const NOT_CUE = 'button, [role="button"], [role^="menu"], [class*="setting" i], [class*="menu" i], .jw-controlbar, .jw-tooltip, ' +
+    '[class*="toast" i], [class*="loading" i]';
   const SUB_CANVAS = /libass|jassub|octopus|subtitle/i;
 
   // Where the picture sits on screen inside the <video> box (letterboxing).
