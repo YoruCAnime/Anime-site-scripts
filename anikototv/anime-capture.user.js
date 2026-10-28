@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Anime Capture
 // @namespace    https://github.com/YoruCAnime/Anime-site-scripts
-// @version      1.6.0
+// @version      1.6.1
 // @description  On anikototv.to and reanime.to video pages: ] screenshot (the best JPEG under 200 KB), = start recording, - stop, [ subtitles in captures on / off. Saved into your capture folder as "<date time> <anime> S1E2". The player fills the browser window when the video starts (Esc leaves, W toggles), and its controls fade 2 s after the mouse stops. Needs the small helper (helper.py) running on this PC.
 // @author       YoruCAnime
 // @homepageURL  https://github.com/YoruCAnime/Anime-site-scripts
@@ -230,15 +230,25 @@
     }
     html.classList.toggle('acap-idle', idle);
   }
+  // Light on purpose (mouse moves come up to ~100 a second): no measuring of
+  // the page, the class is only touched when it is on, and the 2 s timer is
+  // re-armed at most 4 times a second.
+  let lastWake = 0;
   function wake(e) {
     if (!HIDE_CONTROLS_AFTER) return;
     // Chrome sends still "mouse moves" when the page changes under the pointer.
     const still = e && e.type === 'mousemove' && !e.movementX && !e.movementY;
     const capKey = e && e.type === 'keydown' &&
       (ACTS[e.key] || (e.key || '').toLowerCase() === KEY_FILL || e.key === 'Escape');
-    if (!still && !capKey) setIdle(false);
+    const html = document.documentElement;
+    if (!still && !capKey && html && html.classList.contains('acap-idle')) setIdle(false);
+    const now = performance.now();
+    if (e && now - lastWake < 250) return;
+    lastWake = now;
     clearTimeout(idleTimer);
-    if ((IS_TOP ? pageOn() : on) && mainVideo()) idleTimer = setTimeout(() => setIdle(true), HIDE_CONTROLS_AFTER);
+    if ((IS_TOP ? pageOn() : on) && document.querySelector('video')) {
+      idleTimer = setTimeout(() => setIdle(true), HIDE_CONTROLS_AFTER);
+    }
   }
   for (const type of ['mousemove', 'mousedown', 'wheel', 'touchstart', 'keydown']) {
     window.addEventListener(type, wake, { capture: true, passive: true });
@@ -335,15 +345,18 @@
   }, true);
   if (!IS_TOP) {
     let check = 0;
+    // Only reads the page's text when there is no video element at all (the
+    // player has been replaced by its message) - while a video is there this
+    // costs next to nothing.
     const look = () => {
       check = 0;
-      if (refusing || !on || mainVideo() || !document.body) return;
+      if (refusing || !on || !document.body || document.querySelector('video')) return;
       const t = document.body.innerText || '';
       const m = t.length < 400 && t.match(REFUSED_TEXT);
       if (m) handleRefused(m[0], lastPos, null);
     };
     const start = () => new MutationObserver(() => { if (!check) check = setTimeout(look, 500); })
-      .observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+      .observe(document.documentElement, { childList: true, subtree: true });
     if (document.documentElement) start(); else document.addEventListener('DOMContentLoaded', start);
   }
 
