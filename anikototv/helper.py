@@ -60,7 +60,7 @@ if sys.stdout is None:
 if sys.stderr is None:
     sys.stderr = open(os.devnull, 'w')
 
-VERSION = '1.2.2'
+VERSION = '1.2.3'
 HERE = os.path.dirname(os.path.abspath(__file__))
 PORT = int(os.environ.get('ACAP_PORT', 8767))                                      # env: tests
 
@@ -83,14 +83,44 @@ def read_save_folder(path):
     return os.path.expandvars(os.path.expanduser(folder)) if folder else None
 
 
-DEFAULT_FOLDER = os.path.join(os.path.expanduser('~'), 'Pictures', 'Anime captures')
+def known_folder(guid, fallback):
+    """A folder of the signed-in user (Local AppData, Pictures) as Windows
+    itself reports it, so it is right however the helper was started: by the
+    logon task, a shortcut, or a tool that starts it without the usual
+    environment variables (then LOCALAPPDATA / USERPROFILE are missing)."""
+    try:
+        import ctypes
+        import uuid
+        from ctypes import wintypes
+
+        class GUID(ctypes.Structure):
+            _fields_ = [('d1', wintypes.DWORD), ('d2', wintypes.WORD), ('d3', wintypes.WORD), ('d4', ctypes.c_ubyte * 8)]
+
+        u = uuid.UUID(guid)
+        g = GUID(u.time_low, u.time_mid, u.time_hi_version, (ctypes.c_ubyte * 8)(*u.bytes[8:]))
+        out = ctypes.c_wchar_p()
+        if ctypes.windll.shell32.SHGetKnownFolderPath(ctypes.byref(g), 0, None, ctypes.byref(out)) == 0:
+            path = out.value
+            ctypes.windll.ole32.CoTaskMemFree(out)
+            if path:
+                return path
+    except (OSError, AttributeError, ValueError):
+        pass
+    return fallback()
+
+
+LOCAL_APPDATA = known_folder('F1B32785-6FBA-4FCF-9D55-7B8E7F157091',
+                             lambda: os.environ.get('LOCALAPPDATA') or os.path.join(os.path.expanduser('~'), 'AppData', 'Local'))
+PICTURES = known_folder('33E28130-4E1E-4676-835A-98395C3BC3BB', lambda: os.path.join(os.path.expanduser('~'), 'Pictures'))
+DEFAULT_FOLDER = os.path.join(PICTURES, 'Anime captures')
 
 
 def capture_dir():
     """Read again for every capture, so a changed settings.json works at once."""
     return os.environ.get('ACAP_DIR') or read_save_folder(os.path.join(HERE, 'settings.json')) or DEFAULT_FOLDER
-DATA = os.environ.get('ACAP_DATA') or os.path.join(
-    os.environ.get('LOCALAPPDATA') or os.path.join(os.path.expanduser('~'), 'AppData', 'Local'), 'AnimeCapture')
+
+
+DATA = os.environ.get('ACAP_DATA') or os.path.join(LOCAL_APPDATA, 'AnimeCapture')
 TEST_ORIGIN = os.environ.get('ACAP_TEST_ORIGIN', '')     # tests only: a page allowed to call like the userscript
 KEY_FILE = os.path.join(DATA, 'key.txt')
 LOG_FILE = os.path.join(DATA, 'helper.log')
