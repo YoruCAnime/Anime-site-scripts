@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Atsu Comfy Reader
 // @namespace    https://github.com/YoruCAnime/Anime-site-scripts
-// @version      2.0.1
-// @description  Smooth arrow-key scrolling in atsu.moe's vertical (scroll) mode: tap Up / Down for a small smooth step, hold to glide at an even speed (stops the moment you let go), Shift = faster. Every other key is left as it is.
+// @version      2.1.0
+// @description  Smooth arrow-key scrolling in atsu.moe's vertical (scroll) mode: tap Up / Down for a small smooth step, hold to glide at an even speed (stops the moment you let go), Shift = faster. Every other key is left as it is. Also a stop-gap for atsu's bug where clicking a manga lands back on the home page.
 // @author       YoruCAnime
 // @homepageURL  https://github.com/YoruCAnime/Anime-site-scripts
 // @match        https://atsu.moe/*
@@ -109,4 +109,22 @@
   window.addEventListener('keyup', onKeyUp, true);
   window.addEventListener('blur', () => { hold = null; });
   document.addEventListener('visibilitychange', () => { if (document.hidden) { hold = null; pending = 0; vel = 0; } });
+
+  // ---------- stop-gap: manga / chapter links that land back on the home page ----------
+  // (atsu bug, Nov 2026). atsu gets the click first; if the page hasn't reached the link a moment later, open it
+  // properly. Once atsu works again this never kicks in.
+  document.addEventListener('click', (e) => {
+    if (e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
+    const a = e.target.closest && e.target.closest('a[href]');
+    if (!a || (a.target && a.target !== '_self')) return;
+    const inner = e.target.closest('button, [role="button"], select, input, label');
+    if (inner && a.contains(inner)) return;                  // a button on a card (bookmark etc.), not the card itself
+    const u = new URL(a.href, location.href);
+    if (u.origin !== location.origin || !/^\/(manga|read)\//.test(u.pathname)) return;
+    const from = location.pathname;
+    setTimeout(() => {
+      const now = location.pathname;
+      if (now !== u.pathname && (now === from || now === '/')) location.assign(u.href);
+    }, 700);
+  }, true);
 })();
