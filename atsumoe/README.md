@@ -27,6 +27,10 @@ Every other key works as normal. Typing in comment boxes isn't affected.
 
 To change the feel, edit the numbers at the top of the script in Tampermonkey (`TAP`, `GLIDE`, `FAST`).
 
+It also works around an atsu bug where clicking a manga or chapter lands back on the home page: if the page
+hasn't moved to the link a moment after you click, the script opens it properly. Once atsu works normally again
+this never kicks in.
+
 ## Atsu Next Chapters: countdown to your next chapters
 
 **[Install atsu-next-chapters.user.js](https://raw.githubusercontent.com/YoruCAnime/Anime-site-scripts/main/atsumoe/atsu-next-chapters.user.js)**
