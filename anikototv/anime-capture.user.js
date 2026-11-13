@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Anime Capture
 // @namespace    https://github.com/YoruCAnime/Anime-site-scripts
-// @version      1.6.2
-// @description  On anikoto and reanime video pages (any address: .to, .bz, .cz ...): ] screenshot (the best JPEG under 200 KB), = start recording, - stop, [ subtitles in captures on / off. Saved into your capture folder as "<date time> <anime> S1E2". The player fills the browser window when the video starts (Esc leaves, W toggles), and its controls fade 2 s after the mouse stops. Needs the small helper (helper.py) running on this PC.
+// @version      1.6.3
+// @description  On anikoto and reanime video pages (any address: .to, .bz, .cz ...): ] screenshot (the best JPEG under 200 KB), = start recording, - stop, [ subtitles in captures on / off. Saved into your capture folder as "<date time> <anime> S1E2". The player fills the browser window when you press play (Esc leaves, W toggles), and its controls fade 2 s after the mouse stops. Needs the small helper (helper.py) running on this PC.
 // @author       YoruCAnime
 // @homepageURL  https://github.com/YoruCAnime/Anime-site-scripts
 // @match        *://anikototv.to/*
@@ -70,8 +70,11 @@
   //        Without it, a page counts once a long video has loaded on it.
   // name / ep: where the anime name and episode number are on the page.
   //        Without them: the page title, and "ep-5" / "episode-5" / "?ep=5" in the address.
-  // fill:  the player box that fills the browser window when the video starts
+  // fill:  the player box that fills the browser window when you press play
   //        (a CSS selector; true = the player's frame; left out = never).
+  // play:  the site's own play button shown before its player loads (a CSS
+  //        selector): pressing it fills the window at once, not when the
+  //        video has loaded. Play buttons inside the player need nothing.
   // servers: the site's server buttons (item), the box holding one group of
   //        them (group, e.g. SUB / DUB; left out = the buttons' own box) and
   //        the class the current one has (active, default "active"). Hidden
@@ -84,6 +87,7 @@
       name: () => text('h1.title, h1[itemprop="name"]'),
       ep: () => (location.pathname.match(/\/ep-([\d.]+)/i) || [])[1] || attr('a[href*="/ep-"].active', 'data-num'),
       fill: '#player-wrapper',
+      play: '#player .play',          // the big blue button (Auto Play off)
       fillCss: '#player-wrapper #player{position:absolute!important;inset:0!important;width:100%!important;height:100%!important}',
       servers: { item: '.servers li[data-link-id]', group: '.type' },
     },
@@ -230,6 +234,15 @@
     if (v.tagName !== 'VIDEO' || !longVideo(v)) return;
     toTop({ type: 'playing' });
     jwHooks();
+  }, true);
+  // Play pressed (the player's own button, or Auto Play): window mode comes
+  // on now, while the video is still loading. Its size may not be known
+  // yet, so a big video on screen that isn't known to be short counts.
+  document.addEventListener('play', (e) => {
+    const v = e.target;
+    if (v.tagName !== 'VIDEO' || v.duration < 60) return;
+    if (!(v.videoWidth >= 320 || (!v.videoWidth && v.getBoundingClientRect().width >= 240))) return;
+    toTop({ type: 'playing' });
   }, true);
 
   // Controls fade: 2 s after the mouse last moved (playing or paused), the
@@ -474,7 +487,10 @@
       case 'esc': if (fill.on && !document.fullscreenElement) { fill.leave(true); toast('Window mode off (W = on)'); } break;
       case 'video':
         if (!sawVideo) { sawVideo = true; syncState(); }
-        fill.left = false;           // a new video (server, episode): window mode comes back when it plays
+        // a new video (server, episode): window mode comes back when it plays -
+        // unless Esc was pressed while it loaded after the site's play button
+        if (!fill.escWhileLoading()) fill.left = false;
+        fill.pressed = 0;
         break;
       case 'playing':
         if (!sawVideo) { sawVideo = true; syncState(); }
@@ -622,7 +638,7 @@
   // the window. Comes on when the video starts; Esc leaves it (for this tab,
   // until W), W toggles. The player's own full-screen button still works.
   const fill = {
-    on: false, left: false, el: null, src: null,
+    on: false, left: false, el: null, src: null, pressed: 0, leftAt: 0,
     css() {
       if (document.getElementById('acap-fill-css')) return;
       const s = document.createElement('style');
@@ -651,7 +667,7 @@
       return true;
     },
     leave(byUser) {
-      if (byUser) this.left = true;
+      if (byUser) { this.left = true; this.leftAt = Date.now(); }
       if (!this.on) return;
       if (this.el) this.el.removeAttribute('data-acap-fill');
       document.documentElement.classList.remove('acap-fill');
@@ -666,11 +682,25 @@
       if (this.on) { this.leave(true); toast('Window mode off (W = on)'); }
       else if (!this.enter(this.src)) toast('No player on this page');
     },
+    escWhileLoading() {
+      return this.left && this.pressed > 0 && this.leftAt >= this.pressed && Date.now() - this.pressed < 60000;
+    },
     check() {          // the site may rebuild the player box (next episode)
       if (this.on && (!this.el || !this.el.isConnected)) { this.on = false; this.enter(this.src); }
     },
   };
   if (IS_TOP) setInterval(syncState, 1000);
+  // The site's own play button (before its player loads): window mode at
+  // once, so the player opens in it.
+  if (IS_TOP && SITE.play) {
+    document.addEventListener('click', (e) => {
+      const t = e.target;
+      if (!t || !t.closest || !t.closest(SITE.play) || !pageOn()) return;
+      fill.left = false;
+      fill.pressed = Date.now();
+      fill.auto(null);
+    }, true);
+  }
 
   // ------------------------------------------------------------- notes
   // Notes show in whichever frame did the work (the player's frame stays
