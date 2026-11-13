@@ -1,18 +1,30 @@
 // ==UserScript==
 // @name         Anime Capture
 // @namespace    https://github.com/YoruCAnime/Anime-site-scripts
-// @version      1.6.1
-// @description  On anikototv.to and reanime.to video pages: ] screenshot (the best JPEG under 200 KB), = start recording, - stop, [ subtitles in captures on / off. Saved into your capture folder as "<date time> <anime> S1E2". The player fills the browser window when the video starts (Esc leaves, W toggles), and its controls fade 2 s after the mouse stops. Needs the small helper (helper.py) running on this PC.
+// @version      1.6.2
+// @description  On anikoto and reanime video pages (any address: .to, .bz, .cz ...): ] screenshot (the best JPEG under 200 KB), = start recording, - stop, [ subtitles in captures on / off. Saved into your capture folder as "<date time> <anime> S1E2". The player fills the browser window when the video starts (Esc leaves, W toggles), and its controls fade 2 s after the mouse stops. Needs the small helper (helper.py) running on this PC.
 // @author       YoruCAnime
 // @homepageURL  https://github.com/YoruCAnime/Anime-site-scripts
 // @match        *://anikototv.to/*
 // @match        *://*.anikototv.to/*
+// @match        *://anikototv.bz/*
+// @match        *://*.anikototv.bz/*
 // @match        *://megaplay.buzz/*
 // @match        *://*.megaplay.buzz/*
 // @match        *://reanime.to/*
 // @match        *://*.reanime.to/*
+// @match        *://reanime.cz/*
+// @match        *://*.reanime.cz/*
 // @match        *://flixcloud.cc/*
 // @match        *://*.flixcloud.cc/*
+// @include      *://anikototv.tld/*
+// @include      *://*.anikototv.tld/*
+// @include      *://reanime.tld/*
+// @include      *://*.reanime.tld/*
+// @include      *://megaplay.tld/*
+// @include      *://*.megaplay.tld/*
+// @include      *://flixcloud.tld/*
+// @include      *://*.flixcloud.tld/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_getValue
 // @grant        GM_setValue
@@ -44,8 +56,10 @@
  *
  * The keys only work on video pages of the sites below; everywhere else they
  * type as usual. Tampermonkey only loads the script on the sites in the
- * @match lines (the sites and their player sites), nowhere else. Adding a site: add a line to SITES, e.g. { host: 'example.com' },
- * and @match lines for the site and for the site its player comes from.
+ * @match / @include lines (the sites and their player sites, with any address
+ * ending via ".tld"), nowhere else. Adding a site: add a line to SITES, e.g.
+ * { host: 'example.*' }, and @include lines for the site and for the site its
+ * player comes from (*://example.tld/*).
  */
 (function () {
   'use strict';
@@ -65,7 +79,7 @@
   //        stream the script clicks the next one in the same group.
   const SITES = [
     {
-      host: 'anikototv.to',
+      host: 'anikototv.*',            // .to, .bz ... (the site moves address)
       video: /^\/watch(?:2gether)?\/./,
       name: () => text('h1.title, h1[itemprop="name"]'),
       ep: () => (location.pathname.match(/\/ep-([\d.]+)/i) || [])[1] || attr('a[href*="/ep-"].active', 'data-num'),
@@ -74,7 +88,7 @@
       servers: { item: '.servers li[data-link-id]', group: '.type' },
     },
     {
-      host: 'reanime.to',
+      host: 'reanime.*',              // .to, .cz ...
       video: /^\/watch\/./,
       // "The Detective Is Already Dead Season 2 - Episode 4 | Re:ANIME"
       name: () => document.title.replace(/\s*\|\s*Re:?\s*ANIME.*$/i, '').replace(/\s+-\s+Episode\s+[\d.]+.*$/i, '').trim(),
@@ -106,7 +120,16 @@
   const TAG = 'anime-capture';
 
   const IS_TOP = window.top === window.self;
-  const siteFor = (host) => SITES.find((s) => host === s.host || host.endsWith('.' + s.host)) || null;
+  // "name.*" = that name with any ending (anikototv.to, anikototv.bz ...), as these
+  // sites move to new addresses now and then; otherwise the exact site.
+  const sameSite = (host, pat) => {
+    if (pat.endsWith('.*') || pat.endsWith('.tld')) {
+      const base = pat.replace(/\.(\*|tld)$/, ''), h = host.replace(/\.[^.]+$/, '');
+      return h === base || h.endsWith('.' + base);
+    }
+    return host === pat || host.endsWith('.' + pat);
+  };
+  const siteFor = (host) => SITES.find((s) => sameSite(host, s.host)) || null;
   const text = (sel) => { const e = document.querySelector(sel); return e ? e.textContent.replace(/\s+/g, ' ').trim() : ''; };
   const attr = (sel, a) => { const e = document.querySelector(sel); return e ? e.getAttribute(a) || '' : ''; };
 
@@ -556,11 +579,11 @@
   // the keys can't reach its video, so say which site it is.
   function uncoveredPlayer() {
     let pats = [];
-    try { pats = (GM_info.script.matches || []).map(String); } catch (e) { /* not Tampermonkey */ }
-    if (!pats.length) pats = ['*://megaplay.buzz/*', '*://*.megaplay.buzz/*'];
+    try { pats = [...(GM_info.script.matches || []), ...(GM_info.script.includes || [])].map(String); } catch (e) { /* not Tampermonkey */ }
+    if (!pats.length) pats = ['*://megaplay.tld/*', '*://flixcloud.tld/*'];
     const covered = (host) => pats.some((m) => {
-      const h = (m.match(/^[^:]+:\/\/([^/]+)/) || [])[1] || '';
-      return h === host || (h.startsWith('*.') && (host === h.slice(2) || host.endsWith(h.slice(1))));
+      const h = ((m.match(/^[^:]+:\/\/([^/]+)/) || [])[1] || '').replace(/^\*\./, '');
+      return h && sameSite(host, h);
     });
     for (const f of document.querySelectorAll('iframe[src]')) {
       const r = f.getBoundingClientRect();
