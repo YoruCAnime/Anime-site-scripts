@@ -14,6 +14,8 @@ If a server refuses the stream, the script switches to the site's next server an
 | `[` | subtitles in screenshots and recordings on / off |
 | `Esc` / `W` | leave / re-enter window mode (the player fills the browser window) |
 
+Window mode comes on when you press play. After `Esc` it comes back when you resume the video (pause, then play).
+
 The keys only work on episode pages. Only the video is captured, never the player's controls.
 Files are named like `2026-10-25 14-03-27 The Apothecary Diaries S3E1.jpg` and never overwrite each other.
 

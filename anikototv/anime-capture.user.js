@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Anime Capture
 // @namespace    https://github.com/YoruCAnime/Anime-site-scripts
-// @version      1.6.3
-// @description  On anikoto and reanime video pages (any address: .to, .bz, .cz ...): ] screenshot (the best JPEG under 200 KB), = start recording, - stop, [ subtitles in captures on / off. Saved into your capture folder as "<date time> <anime> S1E2". The player fills the browser window when you press play (Esc leaves, W toggles), and its controls fade 2 s after the mouse stops. Needs the small helper (helper.py) running on this PC.
+// @version      1.6.4
+// @description  On anikoto and reanime video pages (any address: .to, .bz, .cz ...): ] screenshot (the best JPEG under 200 KB), = start recording, - stop, [ subtitles in captures on / off. Saved into your capture folder as "<date time> <anime> S1E2". The player fills the browser window when you press play (Esc leaves until you resume, W toggles), and its controls fade 2 s after the mouse stops. Needs the small helper (helper.py) running on this PC.
 // @author       YoruCAnime
 // @homepageURL  https://github.com/YoruCAnime/Anime-site-scripts
 // @match        *://anikototv.to/*
@@ -229,18 +229,25 @@
     toTop({ type: 'video' });
     jwHooks();
   }, true);
+  // Videos that have played: 'play' on them again is a resume after a pause
+  // (a new address on the same element starts over).
+  const played = new WeakSet();
+  document.addEventListener('emptied', (e) => { if (e.target.tagName === 'VIDEO') played.delete(e.target); }, true);
   document.addEventListener('playing', (e) => {
     const v = e.target;
     if (v.tagName !== 'VIDEO' || !longVideo(v)) return;
+    played.add(v);
     toTop({ type: 'playing' });
     jwHooks();
   }, true);
   // Play pressed (the player's own button, or Auto Play): window mode comes
   // on now, while the video is still loading. Its size may not be known
   // yet, so a big video on screen that isn't known to be short counts.
+  // Pressed again after a pause: a resume, which undoes Esc.
   document.addEventListener('play', (e) => {
     const v = e.target;
     if (v.tagName !== 'VIDEO' || v.duration < 60) return;
+    if (played.has(v)) { toTop({ type: 'resume' }); return; }
     if (!(v.videoWidth >= 320 || (!v.videoWidth && v.getBoundingClientRect().width >= 240))) return;
     toTop({ type: 'playing' });
   }, true);
@@ -484,7 +491,14 @@
     switch (d.type) {
       case 'ask': post(src, stateMsg()); break;
       case 'key': if (pageOn()) command(d.act, d.t); break;
-      case 'esc': if (fill.on && !document.fullscreenElement) { fill.leave(true); toast('Window mode off (W = on)'); } break;
+      case 'esc':
+        if (fill.on && !document.fullscreenElement) { fill.leave(true, 'esc'); toast('Window mode off (back when you resume, or W)'); }
+        break;
+      case 'resume':                 // play after a pause: window mode comes back after Esc
+        if (!pageOn()) break;
+        if (fill.left && fill.leftBy === 'esc') fill.left = false;
+        fill.auto(src);
+        break;
       case 'video':
         if (!sawVideo) { sawVideo = true; syncState(); }
         // a new video (server, episode): window mode comes back when it plays -
@@ -635,10 +649,11 @@
 
   // Window mode: the player box covers the whole browser window (the tabs
   // and address bar stay), like the site's full screen but without leaving
-  // the window. Comes on when the video starts; Esc leaves it (for this tab,
-  // until W), W toggles. The player's own full-screen button still works.
+  // the window. Comes on when you press play; Esc leaves it until you resume
+  // the video (play after a pause) or press W; W toggles (off with W stays
+  // off until W). The player's own full-screen button still works.
   const fill = {
-    on: false, left: false, el: null, src: null, pressed: 0, leftAt: 0,
+    on: false, left: false, el: null, src: null, pressed: 0, leftAt: 0, leftBy: '',
     css() {
       if (document.getElementById('acap-fill-css')) return;
       const s = document.createElement('style');
@@ -666,8 +681,8 @@
       this.el = el; this.on = true; this.left = false;
       return true;
     },
-    leave(byUser) {
-      if (byUser) { this.left = true; this.leftAt = Date.now(); }
+    leave(byUser, by) {
+      if (byUser) { this.left = true; this.leftAt = Date.now(); this.leftBy = by || 'w'; }
       if (!this.on) return;
       if (this.el) this.el.removeAttribute('data-acap-fill');
       document.documentElement.classList.remove('acap-fill');
