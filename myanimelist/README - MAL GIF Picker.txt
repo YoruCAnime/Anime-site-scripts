@@ -1,4 +1,4 @@
-MAL GIF & Picture Picker  (mal-gif-picker.user.js, v1.0.1, 2026-11-18)
+MAL GIF & Picture Picker  (mal-gif-picker.user.js, v1.0.2, 2026-11-18)
 ======================================================================
 
 A GIF button in every MyAnimeList editor: forum posts, private messages, comment replies (Reply on a profile or
@@ -32,6 +32,10 @@ INSTALL
   https://raw.githubusercontent.com/YoruCAnime/Anime-site-scripts/main/myanimelist/mal-gif-picker.user.js
   Reload your MAL tabs. Later versions arrive by themselves.
   It works next to MAL Paste Codes (pasting a link makes the code) and MAL DMs.
+
+NEW IN 1.0.2
+  - Uploads: when GitHub says no for a moment although your token is fine, the file is sent again by itself
+    (after 6 s, then 12 s) instead of the wrong "The token is not allowed to write" message.
 
 NOT TRIED YET
   Sized pictures ([img=WxH]) as MAL shows them after posting; uploads from this script; MAL's phone layout.
