@@ -66,7 +66,7 @@ HOW IT TALKS TO MAL
   - PC layout only (MAL's phone pages are built differently).
 
 NOT TRIED YET
-  A real message to a real person (the test uses a pretend MAL). Emojis: MAL may not keep every emoji.
+  Emojis: MAL may not keep every emoji. MAL's phone layout.
 
 TEST (offline, sends nothing)
   The offline test (a pretend MAL, 39 checks) is kept with the author, not in the repo.
