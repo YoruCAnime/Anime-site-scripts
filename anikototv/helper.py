@@ -60,7 +60,7 @@ if sys.stdout is None:
 if sys.stderr is None:
     sys.stderr = open(os.devnull, 'w')
 
-VERSION = '1.2.3'
+VERSION = '1.2.4'
 HERE = os.path.dirname(os.path.abspath(__file__))
 PORT = int(os.environ.get('ACAP_PORT', 8767))                                      # env: tests
 
@@ -659,6 +659,27 @@ def ensure_settings():
         log(f'could not make settings.json: {e}')
 
 
+def normal_priority():
+    """Windows starts programs from a scheduled task at below-normal priority; when the PC is busy that left
+    the helper almost no CPU (a screenshot took 56 s instead of 0.7 s and the page gave up). It works under a
+    second per capture, so normal priority costs other programs nothing."""
+    if os.name != 'nt':
+        return ''
+    try:
+        import ctypes
+        k32 = ctypes.windll.kernel32
+        k32.GetPriorityClass.argtypes = [ctypes.c_void_p]
+        k32.SetPriorityClass.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+        me = ctypes.c_void_p(-1)                  # this process (GetCurrentProcess's pseudo handle)
+        before = k32.GetPriorityClass(me)
+        if before in (0x40, 0x4000):          # IDLE / BELOW_NORMAL
+            k32.SetPriorityClass(me, 0x20)    # NORMAL
+            return ' (priority raised to normal)'
+    except Exception as e:  # noqa: BLE001
+        return f' (priority unchanged: {e})'
+    return ''
+
+
 def main():
     try:
         srv = Server(('127.0.0.1', PORT), Handler)
@@ -666,7 +687,8 @@ def main():
         log(f'not started, port {PORT} taken ({e.strerror}) - already running?')
         return
     ensure_settings()
-    log(f'helper {VERSION} listening on 127.0.0.1:{PORT}, saving to {capture_dir()}')
+    prio = normal_priority()
+    log(f'helper {VERSION} listening on 127.0.0.1:{PORT}, saving to {capture_dir()}{prio}')
     threading.Thread(target=recover, daemon=True).start()
     threading.Thread(target=watchdog, daemon=True).start()
     srv.serve_forever()
